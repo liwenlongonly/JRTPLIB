@@ -1,0 +1,8 @@
+.idea
+/data
+/build/*
+/dist/*
+/output/*
+/__pycache__/*
+main.spec
+/cmake-build-debug

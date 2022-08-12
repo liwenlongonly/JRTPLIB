@@ -127,8 +127,8 @@ else (CMAKE_CROSSCOMPILING)
 	endif (JRTPLIB_BIGENDIAN)
 endif (CMAKE_CROSSCOMPILING)
 
-option(JRTPLIB_COMPILE_TESTS "Compile various tests in the 'tests' subdirectory" NO)
-option(JRTPLIB_COMPILE_EXAMPLES "Compile various examples in the 'examples' subdirectory" YES)
+option(JRTPLIB_COMPILE_TESTS "Compile various tests in the 'tests' subdirectory" YES)
+option(JRTPLIB_COMPILE_EXAMPLES "Compile various examples in the 'examples' subdirectory" NO)
 
 # Check winsock first
 set(TESTDEFS "")
