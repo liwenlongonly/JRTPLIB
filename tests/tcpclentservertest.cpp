@@ -11,14 +11,115 @@
 #include "rtptcpaddress.h"
 #include "rtptcptransmitter.h"
 #include "rtppacket.h"
+#include "rtpselect.h"
+
 #include <string.h>
 #include <stdlib.h>
 #include <iostream>
 #include <vector>
 #include <thread>
+#include <stdarg.h>
+#include <stdio.h>
+#include <time.h>
+#include <sys/time.h>
+
+
+#ifndef LOGLEVEL
+#define LOGLEVEL DEBUG
+#endif
 
 using namespace std;
 using namespace jrtplib;
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+enum LogLevel
+{
+    ERROR1 = 0,
+    WARN  = 1,
+    INFO  = 2,
+    DEBUG = 3,
+};
+
+void mylog1(const char* filename, int line, enum LogLevel level, const char* fmt, ...) __attribute__((format(printf,4,5)));
+
+#define Log(level, format, ...) mylog1(__FILE__, __LINE__, level, format, ## __VA_ARGS__)
+
+#ifdef __cplusplus
+};
+#endif
+
+// 使用了GNU C扩展语法，只在gcc（C语言）生效，
+// g++的c++版本编译不通过
+static const char* s_loginfo[] = {
+        [ERROR1] = "ERROR",
+        [WARN]  = "WARN",
+        [INFO]  = "INFO",
+        [DEBUG] = "DEBUG",
+};
+
+static void get_timestamp(char *buffer)
+{
+    time_t t;
+    struct tm *p;
+    struct timeval tv;
+    int len;
+    int millsec;
+
+    t = time(NULL);
+    p = localtime(&t);
+
+    gettimeofday(&tv, NULL);
+    millsec = (int)(tv.tv_usec / 1000);
+
+    /* 时间格式：[2011-11-15 12:47:34:888] */
+    len = snprintf(buffer, 32, "[%04d-%02d-%02d %02d:%02d:%02d:%03d] ",
+                   p->tm_year+1900, p->tm_mon+1,
+                   p->tm_mday, p->tm_hour, p->tm_min, p->tm_sec, millsec);
+
+    buffer[len] = '\0';
+}
+
+void mylog1(const char* filename, int line, enum LogLevel level, const char* fmt, ...)
+{
+    if(level > LOGLEVEL)
+        return;
+
+    va_list arg_list;
+    char buf[1024];
+    memset(buf, 0, 1024);
+    va_start(arg_list, fmt);
+    vsnprintf(buf, 1024, fmt, arg_list);
+    char time[32] = {0};
+
+    // 去掉*可能*存在的目录路径，只保留文件名
+    const char* tmp = strrchr(filename, '/');
+    if (!tmp) tmp = filename;
+    else tmp++;
+    get_timestamp(time);
+
+    switch(level){
+        case DEBUG:
+            //绿色
+            printf("\033[1;32m%s[%s] [%s:%d] %s\n\033[0m", time, s_loginfo[level], tmp, line, buf);
+            break;
+        case INFO:
+            //蓝色
+            printf("\033[1;34m%s[%s] [%s:%d] %s\n\033[0m", time, s_loginfo[level], tmp, line, buf);
+            break;
+        case ERROR1:
+            //红色
+            printf("\033[1;31m%s[%s] [%s:%d] %s\n\033[0m", time, s_loginfo[level], tmp, line, buf);
+            break;
+        case WARN:
+            //黄色
+            printf("\033[1;33m%s[%s] [%s:%d] %s\n\033[0m", time, s_loginfo[level], tmp, line, buf);
+            break;
+    }
+    va_end(arg_list);
+}
 
 inline void checkerror(int rtperr)
 {
@@ -28,6 +129,8 @@ inline void checkerror(int rtperr)
         exit(-1);
     }
 }
+
+bool is_not_done = true;
 
 class MyRTPSession : public RTPSession
 {
@@ -63,13 +166,15 @@ public:
 
     void OnSendError(SocketType sock)
     {
-        cout << m_name << ": Error sending over socket " << sock << ", removing destination" << endl;
+        is_not_done = false;
+        Log(DEBUG, "Error sending over socket %d, removing destination", sock);
         DeleteDestination(RTPTCPAddress(sock));
     }
 
     void OnReceiveError(SocketType sock)
     {
-        cout << m_name << ": Error receiving from socket " << sock << ", removing destination" << endl;
+        is_not_done = false;
+        Log(DEBUG, "Error sending over socket %d, removing destination", sock);
         DeleteDestination(RTPTCPAddress(sock));
     }
 private:
@@ -77,7 +182,6 @@ private:
 };
 
 int clientSend(){
-
 
     RTPSession session;
     RTPAbortDescriptors m_descriptors;
@@ -127,17 +231,19 @@ int clientSend(){
     std::vector<uint8_t> pack(1500);
     int len = 1200;
 
-    int num = 30;
+    int num = 5;
     for (int i = 1 ; i <= num ; i++)
     {
         session.SendPacket((void *)&pack[0],len,0,false,10);
-        printf("\nSending packet %d/%d\n",i,num);
-        RTPTime::Wait(RTPTime(1,0));
+        Log(DEBUG,"Sending packet %d/%d",i,num);
+        RTPTime::Wait(RTPTime(3,0));
     }
     session.BYEDestroy(RTPTime(10,0),0,0);
 
     RTPCLOSE(sockSrv);
 }
+
+vector<SocketType> m_sockets;
 
 int serverRecv(){
     // Create a listener socket and listen on it
@@ -169,13 +275,14 @@ int serverRecv(){
         cerr << "Can't accept incoming connection" << endl;
         return -1;
     }
+    m_sockets.push_back(server);
     RTPCLOSE(listener);
 
     cout << "Got connected socket pair" << endl;
 
     const int packSize = 1500;
     RTPSessionParams sessParams;
-    RTPTCPTransmitter trans2 = RTPTCPTransmitter(0);
+    MyTCPTransmitter trans2("serverRecv");
     RTPSession sess2;
 
     sessParams.SetProbationType(RTPSources::NoProbation);
@@ -198,33 +305,41 @@ int serverRecv(){
     checkerror(sess2.AddDestination(RTPTCPAddress(server)));
 
     vector<uint8_t> pack(packSize);
+    vector<int8_t> flags(m_sockets.size());
 
-    while(1)
+    while(is_not_done)
     {
-        sess2.BeginDataAccess();
-        if (sess2.GotoFirstSourceWithData())
-        {
-            do
-            {
-                RTPPacket *pack;
-
-                while ((pack = sess2.GetNextPacket()) != NULL)
-                {
-                    // You can examine the data here
-                    printf("Got packet !\n");
-                    // we don't longer need the packet, so
-                    // we'll delete it
-                    sess2.DeletePacket(pack);
-                }
-            } while (sess2.GotoNextSourceWithData());
-        }
-        sess2.EndDataAccess();
-
+        sess2.IsActive();
+        RTPTime waitTime(1);
+        //cout << "Waiting at most " << minInt << " seconds in select" << endl;
+        int status = RTPSelect(&m_sockets[0], &flags[0], m_sockets.size(), waitTime);
+        checkerror(status);
+        if(status > 0){
 #ifndef RTP_SUPPORT_THREAD
-        checkerror(sess2.Poll());
+            checkerror(sess2.Poll());
 #endif // RTP_SUPPORT_THREAD
-
-        RTPTime::Wait(RTPTime(1,0));
+            sess2.BeginDataAccess();
+            if (sess2.GotoFirstSourceWithData())
+            {
+                do
+                {
+                    RTPPacket *pack;
+                    while ((pack = sess2.GetNextPacket()) != NULL)
+                    {
+                        // You can examine the data here
+                        Log(DEBUG,"Got packet ! ");
+                        // we don't longer need the packet, so
+                        // we'll delete it
+                        sess2.DeletePacket(pack);
+                    }
+                } while (sess2.GotoNextSourceWithData());
+            }else{
+                Log(DEBUG,"RTPTime::Wait ! ");
+                RTPTime::Wait(RTPTime(1,0));
+            }
+            sess2.EndDataAccess();
+        }
+        Log(DEBUG, "Loop Event finish! status:%d", status);
     }
     sess2.BYEDestroy(RTPTime(10,0),0,0);
     return 0;
@@ -235,6 +350,7 @@ int main(int argc, char *argv[]){
     WSADATA dat;
     WSAStartup(MAKEWORD(2,2),&dat);
 #endif
+
     std::thread t1(serverRecv);
     std::thread t2(clientSend);
 
