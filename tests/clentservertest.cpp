@@ -1,5 +1,5 @@
 //
-// Created by jqq on 2022/8/12.
+// Created by ilong on 2022/8/12.
 //
 #include "rtpconfig.h"
 #include "rtpsocketutil.h"
@@ -132,56 +132,7 @@ inline void checkerror(int rtperr)
 
 bool is_not_done = true;
 
-class MyRTPSession : public RTPSession
-{
-public:
-    MyRTPSession() : RTPSession() { }
-    ~MyRTPSession() { }
-protected:
-    void OnValidatedRTPPacket(RTPSourceData *srcdat, RTPPacket *rtppack, bool isonprobation, bool *ispackethandled)
-    {
-        printf("SSRC %x Got packet (%d bytes) in OnValidatedRTPPacket from source 0x%04x!\n", GetLocalSSRC(),
-               (int)rtppack->GetPayloadLength(), srcdat->GetSSRC());
-        DeletePacket(rtppack);
-        *ispackethandled = true;
-    }
-
-    void OnRTCPSDESItem(RTPSourceData *srcdat, RTCPSDESPacket::ItemType t, const void *itemdata, size_t itemlength)
-    {
-        char msg[1024];
-
-        memset(msg, 0, sizeof(msg));
-        if (itemlength >= sizeof(msg))
-            itemlength = sizeof(msg)-1;
-
-        memcpy(msg, itemdata, itemlength);
-        printf("SSRC %x Received SDES item (%d): %s from SSRC %x\n", GetLocalSSRC(), (int)t, msg, srcdat->GetSSRC());
-    }
-};
-
-class MyTCPTransmitter : public RTPTCPTransmitter
-{
-public:
-    MyTCPTransmitter(const string &name) : RTPTCPTransmitter(0), m_name(name) { }
-
-    void OnSendError(SocketType sock)
-    {
-        is_not_done = false;
-        Log(DEBUG, "Error sending over socket %d, removing destination", sock);
-        DeleteDestination(RTPTCPAddress(sock));
-    }
-
-    void OnReceiveError(SocketType sock)
-    {
-        is_not_done = false;
-        Log(DEBUG, "Error sending over socket %d, removing destination", sock);
-        DeleteDestination(RTPTCPAddress(sock));
-    }
-private:
-    string m_name;
-};
-
-int clientSend(){
+int tcpSendclient(){
 
     RTPSession session;
     RTPAbortDescriptors m_descriptors;
@@ -196,8 +147,7 @@ int clientSend(){
     transparams.SetCreatedAbortDescriptors(&m_descriptors);
     int status = session.Create(sessionparams,&transparams,RTPTransmitter::TCPProto);
 
-    if (status < 0)
-    {
+    if (status < 0){
         //std::cerr << "[session.Create]" << QString::fromStdString(RTPGetErrorString(status));
         std::cout << "ERROR: " << RTPGetErrorString(status) << std::endl;
         return -1;
@@ -231,12 +181,13 @@ int clientSend(){
     std::vector<uint8_t> pack(1500);
     int len = 1200;
 
-    int num = 5;
+    int num = 20;
     for (int i = 1 ; i <= num ; i++)
     {
-        session.SendPacket((void *)&pack[0],len,0,false,10);
+        bool mark = i % 5 ==0 ? true : false;
+        session.SendPacket((void *)&pack[0], len,96, mark, mark?10:0);
         Log(DEBUG,"Sending packet %d/%d",i,num);
-        RTPTime::Wait(RTPTime(3,0));
+        RTPTime::Wait(RTPTime(0,200*1000));
     }
     session.BYEDestroy(RTPTime(10,0),0,0);
 
@@ -245,7 +196,7 @@ int clientSend(){
 
 vector<SocketType> m_sockets;
 
-int serverRecv(){
+int tcpRecvServer(){
     // Create a listener socket and listen on it
     SocketType listener = socket(AF_INET, SOCK_STREAM, 0);
     if (listener == RTPSOCKERR)
@@ -282,8 +233,8 @@ int serverRecv(){
 
     const int packSize = 1500;
     RTPSessionParams sessParams;
-    MyTCPTransmitter trans2("serverRecv");
-    RTPSession sess2;
+    RTPTCPTransmitter trans(0);
+    RTPSession sess;
 
     sessParams.SetProbationType(RTPSources::NoProbation);
     sessParams.SetOwnTimestampUnit(1.0/packSize);
@@ -294,22 +245,16 @@ int serverRecv(){
     threadsafe = true;
 #endif // RTP_SUPPORT_THREAD
 
-
-    checkerror(trans2.Init(threadsafe));
-
-    checkerror(trans2.Create(65535, 0));
-
-    checkerror(sess2.Create(sessParams, &trans2));
-    cout << "Session 2 created " << endl;
-
-    checkerror(sess2.AddDestination(RTPTCPAddress(server)));
-
+    checkerror(trans.Init(threadsafe));
+    checkerror(trans.Create(65535, 0));
+    checkerror(sess.Create(sessParams, &trans));
+    checkerror(sess.AddDestination(RTPTCPAddress(server)));
     vector<uint8_t> pack(packSize);
     vector<int8_t> flags(m_sockets.size());
 
     while(is_not_done)
     {
-        //
+        // 判断tcp 链接是否断开
         struct tcp_info info;
         int len = sizeof(struct tcp_info);
         getsockopt(server, IPPROTO_TCP, TCP_INFO, &info, (socklen_t *)&len);
@@ -321,24 +266,30 @@ int serverRecv(){
             checkerror(status);
             if(status > 0){
 
-                checkerror(sess2.Poll());
-                sess2.BeginDataAccess();
-                if (sess2.GotoFirstSourceWithData())
+                checkerror(sess.Poll());
+                sess.BeginDataAccess();
+                if (sess.GotoFirstSourceWithData())
                 {
                     do
                     {
                         RTPPacket *pack;
-                        while ((pack = sess2.GetNextPacket()) != NULL)
+                        while ((pack = sess.GetNextPacket()) != NULL)
                         {
                             // You can examine the data here
-                            Log(DEBUG,"Got packet ! ");
+                            Log(DEBUG,"Got packet-> seqNum:%d pt:%d ssrc:%u mark:%d payloadLength:%llu timestamp:%u",
+                                pack->GetSequenceNumber(),
+                                pack->GetPayloadType(),
+                                pack->GetSSRC(),
+                                pack->HasMarker(),
+                                pack->GetPayloadLength(),
+                                pack->GetTimestamp());
                             // we don't longer need the packet, so
                             // we'll delete it
-                            sess2.DeletePacket(pack);
+                            sess.DeletePacket(pack);
                         }
-                    } while (sess2.GotoNextSourceWithData());
+                    } while (sess.GotoNextSourceWithData());
                 }
-                sess2.EndDataAccess();
+                sess.EndDataAccess();
             }
         } else {
             Log(DEBUG,"tcp socket disconnected\n");
@@ -346,21 +297,18 @@ int serverRecv(){
         }
         Log(DEBUG, "Loop Event finish!");
     }
-    sess2.BYEDestroy(RTPTime(10,0),0,0);
+
+    sess.BYEDestroy(RTPTime(10,0),0,0);
     return 0;
 }
 
 int main(int argc, char *argv[]){
-#ifdef RTP_SOCKETTYPE_WINSOCK
-    WSADATA dat;
-    WSAStartup(MAKEWORD(2,2),&dat);
-#endif
 
-    std::thread t1(serverRecv);
-    std::thread t2(clientSend);
+    std::thread tcpServer(tcpRecvServer);
+    std::thread tcpClient(tcpSendclient);
 
-    t2.join();
-    t1.join();
+    tcpClient.join();
+    tcpServer.join();
 
     return 0;
 }
