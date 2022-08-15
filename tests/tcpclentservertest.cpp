@@ -22,7 +22,7 @@
 #include <stdio.h>
 #include <time.h>
 #include <sys/time.h>
-
+#include <netinet/tcp.h>
 
 #ifndef LOGLEVEL
 #define LOGLEVEL DEBUG
@@ -309,37 +309,42 @@ int serverRecv(){
 
     while(is_not_done)
     {
-        sess2.IsActive();
-        RTPTime waitTime(1);
-        //cout << "Waiting at most " << minInt << " seconds in select" << endl;
-        int status = RTPSelect(&m_sockets[0], &flags[0], m_sockets.size(), waitTime);
-        checkerror(status);
-        if(status > 0){
-#ifndef RTP_SUPPORT_THREAD
-            checkerror(sess2.Poll());
-#endif // RTP_SUPPORT_THREAD
-            sess2.BeginDataAccess();
-            if (sess2.GotoFirstSourceWithData())
-            {
-                do
+        //
+        struct tcp_info info;
+        int len = sizeof(struct tcp_info);
+        getsockopt(server, IPPROTO_TCP, TCP_INFO, &info, (socklen_t *)&len);
+        if ((info.tcpi_state == TCP_ESTABLISHED)) {
+            Log(DEBUG,"tcp socket connected\n");
+            // Select
+            RTPTime waitTime(1);
+            int status = RTPSelect(&m_sockets[0], &flags[0], m_sockets.size(), waitTime);
+            checkerror(status);
+            if(status > 0){
+
+                checkerror(sess2.Poll());
+                sess2.BeginDataAccess();
+                if (sess2.GotoFirstSourceWithData())
                 {
-                    RTPPacket *pack;
-                    while ((pack = sess2.GetNextPacket()) != NULL)
+                    do
                     {
-                        // You can examine the data here
-                        Log(DEBUG,"Got packet ! ");
-                        // we don't longer need the packet, so
-                        // we'll delete it
-                        sess2.DeletePacket(pack);
-                    }
-                } while (sess2.GotoNextSourceWithData());
-            }else{
-                Log(DEBUG,"RTPTime::Wait ! ");
-                RTPTime::Wait(RTPTime(1,0));
+                        RTPPacket *pack;
+                        while ((pack = sess2.GetNextPacket()) != NULL)
+                        {
+                            // You can examine the data here
+                            Log(DEBUG,"Got packet ! ");
+                            // we don't longer need the packet, so
+                            // we'll delete it
+                            sess2.DeletePacket(pack);
+                        }
+                    } while (sess2.GotoNextSourceWithData());
+                }
+                sess2.EndDataAccess();
             }
-            sess2.EndDataAccess();
+        } else {
+            Log(DEBUG,"tcp socket disconnected\n");
+            break;
         }
-        Log(DEBUG, "Loop Event finish! status:%d", status);
+        Log(DEBUG, "Loop Event finish!");
     }
     sess2.BYEDestroy(RTPTime(10,0),0,0);
     return 0;
