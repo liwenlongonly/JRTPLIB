@@ -12,6 +12,7 @@
 #include "rtppacket.h"
 #include "rtpselect.h"
 #include "rtpudpv4transmitter.h"
+#include "log.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -24,102 +25,8 @@
 #include <sys/time.h>
 #include <netinet/tcp.h>
 
-#ifndef LOGLEVEL
-#define LOGLEVEL DEBUG
-#endif
-
 using namespace std;
 using namespace jrtplib;
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-enum LogLevel
-{
-    ERROR1 = 0,
-    WARN  = 1,
-    INFO  = 2,
-    DEBUG = 3,
-};
-
-void mylog1(const char* filename, int line, enum LogLevel level, const char* fmt, ...) __attribute__((format(printf,4,5)));
-
-#define Log(level, format, ...) mylog1(__FILE__, __LINE__, level, format, ## __VA_ARGS__)
-
-#ifdef __cplusplus
-};
-#endif
-
-// 使用了GNU C扩展语法，只在gcc（C语言）生效，
-// g++的c++版本编译不通过
-static const char* s_loginfo[] = {
-        [ERROR1] = "ERROR",
-        [WARN]  = "WARN",
-        [INFO]  = "INFO",
-        [DEBUG] = "DEBUG",
-};
-
-static void get_timestamp(char *buffer)
-{
-    time_t t;
-    struct tm *p;
-    struct timeval tv;
-    int len;
-    int millsec;
-
-    t = time(NULL);
-    p = localtime(&t);
-
-    gettimeofday(&tv, NULL);
-    millsec = (int)(tv.tv_usec / 1000);
-
-    /* 时间格式：[2011-11-15 12:47:34:888] */
-    len = snprintf(buffer, 32, "[%04d-%02d-%02d %02d:%02d:%02d:%03d] ",
-                   p->tm_year+1900, p->tm_mon+1,
-                   p->tm_mday, p->tm_hour, p->tm_min, p->tm_sec, millsec);
-
-    buffer[len] = '\0';
-}
-
-void mylog1(const char* filename, int line, enum LogLevel level, const char* fmt, ...)
-{
-    if(level > LOGLEVEL)
-        return;
-
-    va_list arg_list;
-    char buf[1024];
-    memset(buf, 0, 1024);
-    va_start(arg_list, fmt);
-    vsnprintf(buf, 1024, fmt, arg_list);
-    char time[32] = {0};
-
-    // 去掉*可能*存在的目录路径，只保留文件名
-    const char* tmp = strrchr(filename, '/');
-    if (!tmp) tmp = filename;
-    else tmp++;
-    get_timestamp(time);
-
-    switch(level){
-        case DEBUG:
-            //绿色
-            printf("\033[1;32m%s[%s] [%s:%d] %s\n\033[0m", time, s_loginfo[level], tmp, line, buf);
-            break;
-        case INFO:
-            //蓝色
-            printf("\033[1;34m%s[%s] [%s:%d] %s\n\033[0m", time, s_loginfo[level], tmp, line, buf);
-            break;
-        case ERROR1:
-            //红色
-            printf("\033[1;31m%s[%s] [%s:%d] %s\n\033[0m", time, s_loginfo[level], tmp, line, buf);
-            break;
-        case WARN:
-            //黄色
-            printf("\033[1;33m%s[%s] [%s:%d] %s\n\033[0m", time, s_loginfo[level], tmp, line, buf);
-            break;
-    }
-    va_end(arg_list);
-}
 
 inline void checkerror(int rtperr)
 {
@@ -201,13 +108,13 @@ public:
 
     void OnSendError(SocketType sock)
     {
-        Log(ERROR1, "%s Error sending over socket", m_name.c_str());
+        Log(ERROR, "%s Error sending over socket", m_name.c_str());
         DeleteDestination(RTPTCPAddress(sock));
     }
 
     void OnReceiveError(SocketType sock)
     {
-        Log(ERROR1, "%s Error receiving from socket", m_name.c_str());
+        Log(ERROR, "%s Error receiving from socket", m_name.c_str());
         DeleteDestination(RTPTCPAddress(sock));
     }
 private:
@@ -221,7 +128,7 @@ int tcpRecvServer(){
     SocketType listener = socket(AF_INET, SOCK_STREAM, 0);
     if (listener == RTPSOCKERR)
     {
-        Log(ERROR1, "Can't create listener socket");
+        Log(ERROR, "Can't create listener socket");
         return -1;
     }
 
@@ -233,7 +140,7 @@ int tcpRecvServer(){
 
     if (bind(listener, (struct sockaddr *)&servAddr, sizeof(servAddr)) != 0)
     {
-        Log(ERROR1, "Can't bind listener socket");
+        Log(ERROR, "Can't bind listener socket");
         return -1;
     }
 
@@ -443,7 +350,7 @@ int udpRecvServer(){
     return 0;
 }
 
-//#define TCP
+#define TCP
 
 int main(int argc, char *argv[]){
 
