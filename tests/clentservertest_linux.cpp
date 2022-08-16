@@ -130,6 +130,8 @@ inline void checkerror(int rtperr)
     }
 }
 
+#define SERVER_PORT 9001
+
 int tcpSendClient(){
 
     RTPSession session;
@@ -156,7 +158,7 @@ int tcpSendClient(){
     struct sockaddr_in addrSrv;
     addrSrv.sin_addr.s_addr = inet_addr("127.0.0.1");
     addrSrv.sin_family = AF_INET;
-    addrSrv.sin_port = htons(15000);
+    addrSrv.sin_port = htons(SERVER_PORT);
 
     //连接服务器
     connect( sockSrv, (struct sockaddr*)&addrSrv, sizeof(struct sockaddr));
@@ -212,7 +214,6 @@ private:
     string m_name;
 };
 
-
 vector<SocketType> m_sockets;
 
 int tcpRecvServer(){
@@ -220,7 +221,7 @@ int tcpRecvServer(){
     SocketType listener = socket(AF_INET, SOCK_STREAM, 0);
     if (listener == RTPSOCKERR)
     {
-        cerr << "Can't create listener socket" << endl;
+        Log(ERROR1, "Can't create listener socket");
         return -1;
     }
 
@@ -228,25 +229,39 @@ int tcpRecvServer(){
 
     memset(&servAddr, 0, sizeof(servAddr));
     servAddr.sin_family = AF_INET;
-    servAddr.sin_port = htons(15000);
+    servAddr.sin_port = htons(SERVER_PORT);
 
     if (bind(listener, (struct sockaddr *)&servAddr, sizeof(servAddr)) != 0)
     {
-        cerr << "Can't bind listener socket" << endl;
+        Log(ERROR1, "Can't bind listener socket");
         return -1;
     }
 
     listen(listener, 1);
+    m_sockets.push_back(listener);
+    vector<int8_t> listenerFlags(m_sockets.size());
 
-    // 阻塞方式监听端口
-    SocketType server = accept(listener, 0, 0);
-    if (server == RTPSOCKERR)
-    {
-        cerr << "Can't accept incoming connection" << endl;
-        return -1;
+    while (true){
+        // 非阻塞方式监听端口
+        RTPTime waitTime(0.2);
+        int status = RTPSelect(&m_sockets[0], &listenerFlags[0], m_sockets.size(), waitTime);
+        checkerror(status);
+        if(status > 0){
+            if(listenerFlags[0]){
+                SocketType server = accept(listener, 0, 0);
+                if (server == RTPSOCKERR)
+                {
+                    cerr << "Can't accept incoming connection" << endl;
+                    return -1;
+                }
+                m_sockets.pop_back();
+                m_sockets.push_back(server);
+                RTPCLOSE(listener);
+                break;
+            }
+        }
+        Log(DEBUG, "rtpselect before accept!");
     }
-    m_sockets.push_back(server);
-    RTPCLOSE(listener);
 
     cout << "Got connected socket pair" << endl;
 
@@ -263,7 +278,7 @@ int tcpRecvServer(){
     checkerror(trans.Init(threadsafe));
     checkerror(trans.Create(65535, 0));
     checkerror(sess.Create(sessParams, &trans));
-    checkerror(sess.AddDestination(RTPTCPAddress(server)));
+    checkerror(sess.AddDestination(RTPTCPAddress(m_sockets[0])));
     vector<uint8_t> pack(packSize);
     vector<int8_t> flags(m_sockets.size());
 
@@ -272,7 +287,7 @@ int tcpRecvServer(){
         // 判断tcp 链接是否断开
         struct tcp_info info;
         int len = sizeof(struct tcp_info);
-        getsockopt(server, IPPROTO_TCP, TCP_INFO, &info, (socklen_t *)&len);
+        getsockopt(m_sockets[0], IPPROTO_TCP, TCP_INFO, &info, (socklen_t *)&len);
         if ((info.tcpi_state == TCP_ESTABLISHED)) {
             Log(DEBUG,"tcp socket connected\n");
             // Select
@@ -317,12 +332,10 @@ int tcpRecvServer(){
     return 0;
 }
 
-#define UDP_SERVER_PORT 9000
-
 int udpSendClient(){
     RTPSession sess;
     uint16_t portbase = 3000;
-    uint16_t destport = UDP_SERVER_PORT;
+    uint16_t destport = SERVER_PORT;
     uint32_t destip;
 
     int status;
@@ -377,7 +390,7 @@ int udpRecvServer(){
     sessparams.SetOwnTimestampUnit(1.0/8000.0);
 
     sessparams.SetAcceptOwnPackets(true);
-    transparams.SetPortbase(UDP_SERVER_PORT);
+    transparams.SetPortbase(SERVER_PORT);
 
     RTPUDPv4Transmitter transmitter(0);
     checkerror(transmitter.Init(false));
@@ -409,14 +422,13 @@ int udpRecvServer(){
                     while ((pack = sess.GetNextPacket()) != NULL)
                     {
                         // You can examine the data here
-                        Log(DEBUG,"Got packet-> seqNum:%d pt:%d ssrc:%u mark:%d payloadLength:%llu timestamp:%u content:%s",
+                        Log(DEBUG,"Got packet-> seqNum:%d pt:%d ssrc:%u mark:%d payloadLength:%llu timestamp:%u",
                             pack->GetSequenceNumber(),
                             pack->GetPayloadType(),
                             pack->GetSSRC(),
                             pack->HasMarker(),
                             pack->GetPayloadLength(),
-                            pack->GetTimestamp(),
-                            pack->GetPacketData());
+                            pack->GetTimestamp());
                         // we don't longer need the packet, so
                         // we'll delete it
                         sess.DeletePacket(pack);
@@ -431,7 +443,7 @@ int udpRecvServer(){
     return 0;
 }
 
-//#define TCP
+#define TCP
 
 int main(int argc, char *argv[]){
 
@@ -442,8 +454,8 @@ int main(int argc, char *argv[]){
     tcpServer.join();
 #else
     std::thread udpServer(udpRecvServer);
-    std::thread udpClient(udpSendClient);
-    udpClient.join();
+    //std::thread udpClient(udpSendClient);
+    //udpClient.join();
     udpServer.join();
 #endif
     return 0;
