@@ -130,7 +130,7 @@ inline void checkerror(int rtperr)
     }
 }
 
-#define SERVER_PORT 9001
+#define SERVER_PORT 10000
 
 int tcpSendClient(){
 
@@ -443,14 +443,14 @@ int udpRecvServer(){
     return 0;
 }
 
-#define TCP
+//#define TCP
 
 int main(int argc, char *argv[]){
 
 #ifdef TCP
     std::thread tcpServer(tcpRecvServer);
-    std::thread tcpClient(tcpSendClient);
-    tcpClient.join();
+    //std::thread tcpClient(tcpSendClient);
+    //tcpClient.join();
     tcpServer.join();
 #else
     std::thread udpServer(udpRecvServer);
