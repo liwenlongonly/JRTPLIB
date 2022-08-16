@@ -148,9 +148,10 @@ int tcpRecvServer(){
     m_sockets.push_back(listener);
     vector<int8_t> listenerFlags(m_sockets.size());
 
+    tcpAccept:
     while (true){
         // 非阻塞方式监听端口
-        RTPTime waitTime(0.2);
+        RTPTime waitTime(0.5);
         int status = RTPSelect(&m_sockets[0], &listenerFlags[0], m_sockets.size(), waitTime);
         checkerror(status);
         if(status > 0){
@@ -163,7 +164,6 @@ int tcpRecvServer(){
                 }
                 m_sockets.pop_back();
                 m_sockets.push_back(server);
-                RTPCLOSE(listener);
                 break;
             }
         }
@@ -229,12 +229,14 @@ int tcpRecvServer(){
                 sess.EndDataAccess();
             }
         } else {
-            Log(DEBUG,"tcp socket disconnected\n");
-            break;
+            Log(WARN, "tcp disconnect goto accept!");
+            m_sockets.pop_back();
+            m_sockets.push_back(listener);
+            goto tcpAccept;
         }
         Log(DEBUG, "Loop Event finish!");
     }
-
+    RTPCLOSE(listener);
     sess.BYEDestroy(RTPTime(10,0),0,0);
     return 0;
 }
