@@ -19,10 +19,6 @@
 #include <iostream>
 #include <vector>
 #include <thread>
-#include <stdarg.h>
-#include <stdio.h>
-#include <time.h>
-#include <sys/time.h>
 #include <netinet/tcp.h>
 
 using namespace std;
