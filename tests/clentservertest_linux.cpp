@@ -85,8 +85,7 @@ int tcpSendClient(){
     int len = 1200;
 
     int num = 20;
-    for (int i = 1 ; i <= num ; i++)
-    {
+    for (int i = 1 ; i <= num ; i++){
         bool mark = i % 5 ==0 ? true : false;
         session.SendPacket((void *)&pack[0], len,96, mark, mark?10:0);
         Log(DEBUG,"Sending packet %d/%d",i,num);
@@ -97,27 +96,17 @@ int tcpSendClient(){
     RTPCLOSE(sockSrv);
 }
 
-class MyTCPTransmitter : public RTPTCPTransmitter
-{
-public:
-    MyTCPTransmitter(const string &name) : RTPTCPTransmitter(nullptr), m_name(name) { }
-
-    void OnSendError(SocketType sock)
-    {
-        Log(ERROR, "%s Error sending over socket", m_name.c_str());
-        DeleteDestination(RTPTCPAddress(sock));
-    }
-
-    void OnReceiveError(SocketType sock)
-    {
-        Log(ERROR, "%s Error receiving from socket", m_name.c_str());
-        DeleteDestination(RTPTCPAddress(sock));
-    }
-private:
-    string m_name;
-};
-
 vector<SocketType> m_sockets;
+
+bool isTcpConnected(SocketType sock){
+    struct tcp_info info;
+    int len = sizeof(struct tcp_info);
+    getsockopt(sock, IPPROTO_TCP, TCP_INFO, &info, (socklen_t *)&len);
+    if (info.tcpi_state == TCP_ESTABLISHED) {
+        return true;
+    }
+    return false;
+}
 
 int tcpRecvServer(){
     // Create a listener socket and listen on it
@@ -150,14 +139,14 @@ int tcpRecvServer(){
     sessParams->SetOwnTimestampUnit(1.0/packSize);
     sessParams->SetMaximumPacketSize(packSize + 64); // some extra room for rtp header
 
-    auto trans = std::make_shared<MyTCPTransmitter>("tcpRecvServer");
+    auto trans = std::make_shared<RTPTCPTransmitter>(nullptr);
     checkerror(trans->Init(false));
     checkerror(trans->Create(65535, 0));
 
     m_sockets.push_back(listener);
     vector<int8_t> listenerFlags(m_sockets.size());
 
-    tcpAccept:
+tcpAccept:
     while (true){
         // 非阻塞方式监听端口
         RTPTime waitTime(0.5);
@@ -167,6 +156,7 @@ int tcpRecvServer(){
             if(listenerFlags[0]){
                 SocketType server = accept(listener, 0, 0);
                 Log(WARN, "accept SocketType: %d", server);
+                printf("accept SocketType: %d \n", server);
                 if (server == RTPSOCKERR)
                 {
                     cerr << "Can't accept incoming connection" << endl;
@@ -174,7 +164,6 @@ int tcpRecvServer(){
                 }
                 m_sockets.clear();
                 m_sockets.push_back(server);
-                sess.Destroy();
                 checkerror(sess.Create(*sessParams.get(), trans.get()));
                 checkerror(sess.AddDestination(RTPTCPAddress(server)));
                 break;
@@ -188,13 +177,12 @@ int tcpRecvServer(){
     while(true)
     {
         // 判断tcp 链接是否断开
-        struct tcp_info info;
-        int len = sizeof(struct tcp_info);
-        getsockopt(m_sockets[0], IPPROTO_TCP, TCP_INFO, &info, (socklen_t *)&len);
-        if (info.tcpi_state != TCP_ESTABLISHED) {
+
+        if (!isTcpConnected(m_sockets[0])) {
             Log(WARN, "tcp disconnect goto accept!");
             m_sockets.clear();
             m_sockets.push_back(listener);
+            sess.Destroy();
             goto tcpAccept;
         }
         Log(DEBUG, "tcp connected!");
@@ -202,6 +190,7 @@ int tcpRecvServer(){
         RTPTime waitTime(0.5);
         int status = RTPSelect(&m_sockets[0], &flags[0], m_sockets.size(), waitTime);
         checkerror(status);
+        Log(DEBUG, "RTPSelect return status: %d",status);
         if(status > 0){
 
             checkerror(sess.Poll());
