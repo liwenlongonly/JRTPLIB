@@ -141,6 +141,19 @@ int tcpRecvServer(){
     }
 
     listen(listener, 1);
+
+    const int packSize = 1500;
+    RTPSessionParams sessParams;
+    MyTCPTransmitter trans("tcpRecvServer");
+    RTPSession sess;
+
+    sessParams.SetProbationType(RTPSources::NoProbation);
+    sessParams.SetOwnTimestampUnit(1.0/packSize);
+    sessParams.SetMaximumPacketSize(packSize + 64); // some extra room for rtp header
+
+    checkerror(trans.Init(false));
+    checkerror(trans.Create(65535, 0));
+
     m_sockets.push_back(listener);
     vector<int8_t> listenerFlags(m_sockets.size());
 
@@ -153,6 +166,7 @@ int tcpRecvServer(){
         if(status > 0){
             if(listenerFlags[0]){
                 SocketType server = accept(listener, 0, 0);
+                Log(WARN, "accept SocketType: %d", server);
                 if (server == RTPSOCKERR)
                 {
                     cerr << "Can't accept incoming connection" << endl;
@@ -160,29 +174,14 @@ int tcpRecvServer(){
                 }
                 m_sockets.pop_back();
                 m_sockets.push_back(server);
+                checkerror(sess.Create(sessParams, &trans));
+                checkerror(sess.AddDestination(RTPTCPAddress(m_sockets[0])));
                 break;
             }
         }
         Log(DEBUG, "rtpselect before accept!");
     }
 
-    cout << "Got connected socket pair" << endl;
-
-    const int packSize = 1500;
-    RTPSessionParams sessParams;
-    MyTCPTransmitter trans("tcpRecvServer");
-    RTPSession sess;
-
-    sessParams.SetProbationType(RTPSources::NoProbation);
-    sessParams.SetOwnTimestampUnit(1.0/packSize);
-    sessParams.SetMaximumPacketSize(packSize + 64); // some extra room for rtp header
-
-    bool threadsafe = false;
-    checkerror(trans.Init(threadsafe));
-    checkerror(trans.Create(65535, 0));
-    checkerror(sess.Create(sessParams, &trans));
-    checkerror(sess.AddDestination(RTPTCPAddress(m_sockets[0])));
-    vector<uint8_t> pack(packSize);
     vector<int8_t> flags(m_sockets.size());
 
     while(true)
@@ -191,44 +190,43 @@ int tcpRecvServer(){
         struct tcp_info info;
         int len = sizeof(struct tcp_info);
         getsockopt(m_sockets[0], IPPROTO_TCP, TCP_INFO, &info, (socklen_t *)&len);
-        if ((info.tcpi_state == TCP_ESTABLISHED)) {
-            Log(DEBUG,"tcp socket connected\n");
-            // Select
-            RTPTime waitTime(1);
-            int status = RTPSelect(&m_sockets[0], &flags[0], m_sockets.size(), waitTime);
-            checkerror(status);
-            if(status > 0){
-
-                checkerror(sess.Poll());
-                sess.BeginDataAccess();
-                if (sess.GotoFirstSourceWithData())
-                {
-                    do
-                    {
-                        RTPPacket *pack;
-                        while ((pack = sess.GetNextPacket()) != NULL)
-                        {
-                            // You can examine the data here
-                            Log(DEBUG,"Got packet-> seqNum:%d pt:%d ssrc:%u mark:%d payloadLength:%llu timestamp:%u",
-                                pack->GetSequenceNumber(),
-                                pack->GetPayloadType(),
-                                pack->GetSSRC(),
-                                pack->HasMarker(),
-                                pack->GetPayloadLength(),
-                                pack->GetTimestamp());
-                            // we don't longer need the packet, so
-                            // we'll delete it
-                            sess.DeletePacket(pack);
-                        }
-                    } while (sess.GotoNextSourceWithData());
-                }
-                sess.EndDataAccess();
-            }
-        } else {
+        if (info.tcpi_state != TCP_ESTABLISHED) {
             Log(WARN, "tcp disconnect goto accept!");
+            sess.Destroy();
             m_sockets.pop_back();
             m_sockets.push_back(listener);
             goto tcpAccept;
+        }
+        // Select
+        RTPTime waitTime(0.5);
+        int status = RTPSelect(&m_sockets[0], &flags[0], m_sockets.size(), waitTime);
+        checkerror(status);
+        if(status > 0){
+
+            checkerror(sess.Poll());
+            sess.BeginDataAccess();
+            if (sess.GotoFirstSourceWithData())
+            {
+                do
+                {
+                    RTPPacket *pack;
+                    while ((pack = sess.GetNextPacket()) != NULL)
+                    {
+                        // You can examine the data here
+                        Log(DEBUG,"Got packet-> seqNum:%d pt:%d ssrc:%u mark:%d payloadLength:%llu timestamp:%u",
+                            pack->GetSequenceNumber(),
+                            pack->GetPayloadType(),
+                            pack->GetSSRC(),
+                            pack->HasMarker(),
+                            pack->GetPayloadLength(),
+                            pack->GetTimestamp());
+                        // we don't longer need the packet, so
+                        // we'll delete it
+                        sess.DeletePacket(pack);
+                    }
+                } while (sess.GotoNextSourceWithData());
+            }
+            sess.EndDataAccess();
         }
         Log(DEBUG, "Loop Event finish!");
     }
