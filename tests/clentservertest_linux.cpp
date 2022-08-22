@@ -23,6 +23,9 @@
 
 using namespace std;
 using namespace jrtplib;
+#define BUFFERSIZE_1024     1024
+#define BUFFERSIZE_GAP      5120 //1024*5
+const int kRtpRecvBufferSize      = BUFFERSIZE_1024*BUFFERSIZE_1024*10*2;
 
 inline void checkerror(int rtperr)
 {
@@ -141,7 +144,7 @@ int tcpRecvServer(){
 
     auto trans = std::make_shared<RTPTCPTransmitter>(nullptr);
     checkerror(trans->Init(false));
-    checkerror(trans->Create(65535, 0));
+    checkerror(trans->Create(65535, nullptr));
 
     m_sockets.push_back(listener);
     vector<int8_t> listenerFlags(m_sockets.size());
@@ -218,10 +221,13 @@ tcpAccept:
             }
             sess.EndDataAccess();
         }
-        Log(DEBUG, "Loop Event finish!");
+        Log(DEBUG, "tcp Loop Event finish!");
     }
     RTPCLOSE(listener);
     sess.BYEDestroy(RTPTime(10,0),0,0);
+    if(trans){
+        trans->Destroy();
+    }
     return 0;
 }
 
@@ -272,32 +278,63 @@ int udpSendClient(){
     return 0;
 }
 
-int udpRecvServer(){
-    RTPSession sess;
+class MyRTPSession : public RTPSession
+{
+public:
+    MyRTPSession() {}
+    virtual ~MyRTPSession() {}
+
+private:
+    virtual void OnRTPPacket(RTPPacket* pack, const RTPTime& receiverTime, const RTPAddress* senderAddress)
+    {
+        AddDestination(*senderAddress);
+    }
+
+    virtual void OnRTCPCompoundPacket(RTCPCompoundPacket *pack, const RTPTime &receivetime,const RTPAddress *senderaddress)
+    {
+        //AddDestination(*senderaddress);
+        //const char* name = "hi~";
+        //SendRTCPAPPPacket(0, (const uint8_t*)name, "keeplive", 8);
+
+        //printf("send rtcp app");
+    }
+};
+
+MyRTPSession sess;
+RTPUDPv4Transmitter transmitter(nullptr);
+
+int sessionCreate(){
+
     RTPUDPv4TransmissionParams transparams;
     RTPSessionParams sessparams;
     // IMPORTANT: The local timestamp unit MUST be set, otherwise
     //            RTCP Sender Report info will be calculated wrong
     // In this case, we'll be just use 8000 samples per second.
-    sessparams.SetUsePollThread(false);
+    sessparams.SetUsePollThread(true);
+    sessparams.SetMinimumRTCPTransmissionInterval(10);
     sessparams.SetOwnTimestampUnit(1.0/8000.0);
-
     sessparams.SetAcceptOwnPackets(true);
-    transparams.SetPortbase(SERVER_PORT);
 
-    RTPUDPv4Transmitter transmitter(0);
+    transparams.SetPortbase(SERVER_PORT);
+    transparams.SetRTPReceiveBuffer(kRtpRecvBufferSize);
+
     checkerror(transmitter.Init(false));
     checkerror(transmitter.Create(64000, &transparams));
 
     RTPUDPv4TransmissionInfo *pInfo = static_cast<RTPUDPv4TransmissionInfo *>(transmitter.GetTransmissionInfo());
-
     SocketType sockFd = pInfo->GetRTPSocket();
     m_sockets.push_back(sockFd);
-    vector<int8_t> flags(m_sockets.size());
 
     int status = sess.Create(sessparams,&transmitter);
     checkerror(status);
 
+    return 0;
+}
+
+
+int udpRecvServer(){
+    sessionCreate();
+    vector<int8_t> flags(m_sockets.size());
     while(true)
     {
         // Select
@@ -330,9 +367,10 @@ int udpRecvServer(){
             }
             sess.EndDataAccess();
         }
-        Log(DEBUG, "Loop Event finish!");
+        Log(DEBUG, "udp Loop Event finish!");
     }
     sess.BYEDestroy(RTPTime(10,0),0,0);
+    transmitter.Destroy();
     return 0;
 }
 
